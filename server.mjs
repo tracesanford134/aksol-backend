@@ -13,39 +13,40 @@ import "dotenv/config";
 const PORT = process.env.PORT || 8080;
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
-const app = express();
-
-/**
- * CORS configuration
- * - Allows local dev and your production/frontend domains.
- * - Blocks unknown origins to keep the backend tidy.
- */
-const allowedOrigins = [
-  "http://localhost:5173",            // Vite dev
-  "http://localhost:4173",            // Vite preview (optional)
-  "https://aksoldapp.netlify.app",    // NEW Netlify dapp URL
-  "https://alaskacrypto.financial",
-  "https://www.alaskacrypto.financial",
-].filter(Boolean);
-
-app.use(
-  cors({
-    origin(origin, callback) {
-      // Allow non-browser tools without origin (curl, Postman, etc.)
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      console.warn(`[CORS] Blocked origin: ${origin}`);
-      return callback(new Error("Not allowed by CORS"));
-    },
-  }),
+// Known-good devnet wallet (your wallet) as fallback
+const DEFAULT_DEMO_WALLET = new PublicKey(
+  "Dhq7PsLz3JZddmxvGZQ8q6HwtNJf9982LrCKPDpX6QTk",
 );
 
+// Helper: resolve a wallet from env with safe fallback
+function resolveWallet(label, primary, secondary) {
+  const raw = primary || secondary;
+  if (!raw) {
+    console.warn(`[WARN] ${label} not set; using DEFAULT_DEMO_WALLET`);
+    return DEFAULT_DEMO_WALLET;
+  }
+
+  const trimmed = raw.trim();
+  try {
+    const pk = new PublicKey(trimmed);
+    console.log(`[INFO] ${label} resolved to ${pk.toBase58()}`);
+    return pk;
+  } catch (e) {
+    console.error(
+      `[ERROR] ${label} invalid. raw=`,
+      JSON.stringify(raw),
+      "trimmed=",
+      JSON.stringify(trimmed),
+      "error=",
+      e,
+    );
+    console.warn(`[WARN] Falling back to DEFAULT_DEMO_WALLET for ${label}`);
+    return DEFAULT_DEMO_WALLET;
+  }
+}
+
+const app = express();
+app.use(cors());
 app.use(express.json());
 
 // Log every incoming request
@@ -96,8 +97,26 @@ app.post("/aksol/send-taxed-tx", async (req, res) => {
       });
     }
 
-    const from = new PublicKey(fromPubkey);
-    const to = new PublicKey(toPubkey);
+    let from, to;
+    try {
+      from = new PublicKey(String(fromPubkey).trim());
+    } catch (e) {
+      console.error("Invalid fromPubkey:", fromPubkey, e);
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid fromPubkey: ${e}`,
+      });
+    }
+
+    try {
+      to = new PublicKey(String(toPubkey).trim());
+    } catch (e) {
+      console.error("Invalid toPubkey:", toPubkey, e);
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid toPubkey: ${e}`,
+      });
+    }
 
     const lamports = Math.round(Number(amountUi) * LAMPORTS_PER_SOL);
     if (!Number.isFinite(lamports) || lamports <= 0) {
@@ -108,15 +127,12 @@ app.post("/aksol/send-taxed-tx", async (req, res) => {
       });
     }
 
-    const taxWalletStr = process.env.AKSOL_TAX_WALLET;
-    if (!taxWalletStr) {
-      console.error("AKSOL_TAX_WALLET not configured");
-      return res.status(500).json({
-        ok: false,
-        error: "AKSOL_TAX_WALLET not configured.",
-      });
-    }
-    const taxWallet = new PublicKey(taxWalletStr);
+    // Resolve tax wallet safely (env + fallback)
+    const taxWallet = resolveWallet(
+      "AKSOL_TAX_WALLET",
+      process.env.AKSOL_TAX_WALLET,
+      null,
+    );
 
     const taxBps = 300; // 3% tax
     const taxLamports = Math.floor((lamports * taxBps) / 10000);
@@ -182,10 +198,7 @@ app.post("/aksol/send-taxed-tx", async (req, res) => {
 
 // 0% purchase route (no tax; full amount to 0% wallet)
 app.post("/aksol/zero-percent-purchase", async (req, res) => {
-  console.log(
-    ">>> HIT /aksol/zero-percent-purchase with body:",
-    req.body,
-  );
+  console.log(">>> HIT /aksol/zero-percent-purchase with body:", req.body);
 
   try {
     const { fromPubkey, amountUi, cluster } = req.body || {};
@@ -198,7 +211,16 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
       });
     }
 
-    const from = new PublicKey(fromPubkey);
+    let from;
+    try {
+      from = new PublicKey(String(fromPubkey).trim());
+    } catch (e) {
+      console.error("Invalid fromPubkey:", fromPubkey, e);
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid fromPubkey: ${e}`,
+      });
+    }
 
     const lamports = Math.round(Number(amountUi) * LAMPORTS_PER_SOL);
     if (!Number.isFinite(lamports) || lamports <= 0) {
@@ -209,16 +231,15 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
       });
     }
 
-    const zeroTaxWalletStr =
-      process.env.AKSOL_ZERO_TAX_WALLET || process.env.AKSOL_TAX_WALLET;
-    if (!zeroTaxWalletStr) {
-      console.error("AKSOL_ZERO_TAX_WALLET not configured");
-      return res.status(500).json({
-        ok: false,
-        error: "AKSOL_ZERO_TAX_WALLET not configured.",
-      });
-    }
-    const zeroTaxWallet = new PublicKey(zeroTaxWalletStr);
+    // Resolve 0% wallet safely:
+    // 1) AKSOL_ZERO_TAX_WALLET
+    // 2) fallback to AKSOL_TAX_WALLET
+    // 3) fallback to DEFAULT_DEMO_WALLET
+    const zeroTaxWallet = resolveWallet(
+      "AKSOL_ZERO_TAX_WALLET / AKSOL_TAX_WALLET",
+      process.env.AKSOL_ZERO_TAX_WALLET,
+      process.env.AKSOL_TAX_WALLET,
+    );
 
     const selectedCluster = cluster || "devnet";
     const connection = new Connection(
@@ -274,5 +295,5 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`AKSOL backend listening on port ${PORT}`);
+  console.log(`AKSOL backend listening on http://localhost:${PORT}`);
 });
