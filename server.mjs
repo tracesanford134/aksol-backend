@@ -234,10 +234,8 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
       });
     }
 
-    // Resolve 0% wallet safely:
-    // 1) AKSOL_ZERO_TAX_WALLET
-    // 2) fallback to AKSOL_TAX_WALLET
-    // 3) fallback to DEFAULT_DEMO_WALLET
+    // 1) Resolve the 0% route wallet:
+    //    prefer AKSOL_ZERO_TAX_WALLET, else fall back to AKSOL_TAX_WALLET, else DEFAULT_DEMO_WALLET
     const zeroTaxWallet = resolveWallet(
       "AKSOL_ZERO_TAX_WALLET / AKSOL_TAX_WALLET",
       process.env.AKSOL_ZERO_TAX_WALLET,
@@ -253,12 +251,12 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
     const { blockhash, lastValidBlockHeight } =
       await connection.getLatestBlockhash();
 
+    // 2) Build transaction: 100% of lamports → zeroTaxWallet
     const tx = new Transaction({
       recentBlockhash: blockhash,
       feePayer: from,
     });
 
-    // 100% of amount goes to 0% route wallet
     tx.add(
       SystemProgram.transfer({
         fromPubkey: from,
@@ -271,11 +269,12 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
       requireAllSignatures: false,
       verifySignatures: false,
     });
+
     const base64Tx = Buffer.from(serialized).toString("base64");
 
     console.log("<<< Responding from /aksol/zero-percent-purchase OK");
 
-    res.json({
+    return res.json({
       ok: true,
       transaction: base64Tx,
       recentBlockhash: blockhash,
@@ -284,26 +283,20 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
     });
   } catch (e) {
     console.error("Error in /aksol/zero-percent-purchase", e);
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: String(e),
     });
   }
 });
 
-/**
- * STOREFRONT PURCHASE (log-only for now)
- * --------------------------------------
- * This does NOT move SOL yet. It:
- *  - validates input,
- *  - logs the request (for you to fulfill manually),
- *  - returns { ok: true } so the card shows a success message.
- */
+// Storefront purchase route (manual fulfillment, no on-chain tx here)
 app.post("/aksol/storefront-purchase", async (req, res) => {
   console.log(">>> HIT /aksol/storefront-purchase with body:", req.body);
 
   try {
-    const { fromPubkey, amountSol, estimatedAksol, note, cluster } = req.body || {};
+    const { fromPubkey, amountSol, estimatedAksol, note, cluster } =
+      req.body || {};
 
     if (!fromPubkey || amountSol == null) {
       console.warn("Missing required fields for storefront");
@@ -317,35 +310,34 @@ app.post("/aksol/storefront-purchase", async (req, res) => {
     try {
       from = new PublicKey(String(fromPubkey).trim());
     } catch (e) {
-      console.error("Invalid fromPubkey in storefront:", fromPubkey, e);
+      console.error("Invalid fromPubkey (storefront):", fromPubkey, e);
       return res.status(400).json({
         ok: false,
         error: `Invalid fromPubkey: ${e}`,
       });
     }
 
-    const parsedSol = Number(amountSol);
-    if (!Number.isFinite(parsedSol) || parsedSol <= 0) {
-      console.warn("Invalid amountSol in storefront:", amountSol);
+    const solAmount = Number(amountSol);
+    if (!Number.isFinite(solAmount) || solAmount <= 0) {
+      console.warn("Invalid storefront SOL amount:", amountSol);
       return res.status(400).json({
         ok: false,
-        error: "Invalid amountSol.",
+        error: "Invalid SOL amount.",
       });
     }
 
-    const effectiveCluster = cluster || "devnet";
+    const network = cluster || "mainnet-beta";
 
-    // For now, just log the request clearly so you can see it in terminal logs
-    console.log("[STOREFRONT REQUEST]", {
-      from: from.toBase58(),
-      amountSol: parsedSol,
-      estimatedAksol: estimatedAksol ?? null,
-      note: note ?? null,
-      cluster: effectiveCluster,
-    });
+    // For now we just log. Later we can email, write to DB, etc.
+    console.log("=== AKSOL STOREFRONT REQUEST ===");
+    console.log("From wallet:", from.toBase58());
+    console.log("SOL amount:", solAmount);
+    console.log("Estimated AKSOL (client hint):", estimatedAksol);
+    console.log("Note:", note);
+    console.log("Network:", network);
+    console.log("================================");
 
-    // TODO (later): tie this into /aksol/zero-percent-purchase
-    // to build a 0% SOL transfer transaction automatically.
+    // In a future step we can integrate nodemailer here to email you.
 
     return res.json({
       ok: true,
@@ -353,7 +345,7 @@ app.post("/aksol/storefront-purchase", async (req, res) => {
     });
   } catch (e) {
     console.error("Error in /aksol/storefront-purchase", e);
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: String(e),
     });
