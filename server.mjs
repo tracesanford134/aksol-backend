@@ -1,4 +1,7 @@
 // server.mjs
+import nodemailer from "nodemailer";
+import assert from "assert";
+
 import express from "express";
 import cors from "cors";
 import {
@@ -281,6 +284,75 @@ app.post("/aksol/zero-percent-purchase", async (req, res) => {
     });
   } catch (e) {
     console.error("Error in /aksol/zero-percent-purchase", e);
+    res.status(500).json({
+      ok: false,
+      error: String(e),
+    });
+  }
+});
+
+/**
+ * STOREFRONT PURCHASE (log-only for now)
+ * --------------------------------------
+ * This does NOT move SOL yet. It:
+ *  - validates input,
+ *  - logs the request (for you to fulfill manually),
+ *  - returns { ok: true } so the card shows a success message.
+ */
+app.post("/aksol/storefront-purchase", async (req, res) => {
+  console.log(">>> HIT /aksol/storefront-purchase with body:", req.body);
+
+  try {
+    const { fromPubkey, amountSol, estimatedAksol, note, cluster } = req.body || {};
+
+    if (!fromPubkey || amountSol == null) {
+      console.warn("Missing required fields for storefront");
+      return res.status(400).json({
+        ok: false,
+        error: "Missing required fields: fromPubkey, amountSol.",
+      });
+    }
+
+    let from;
+    try {
+      from = new PublicKey(String(fromPubkey).trim());
+    } catch (e) {
+      console.error("Invalid fromPubkey in storefront:", fromPubkey, e);
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid fromPubkey: ${e}`,
+      });
+    }
+
+    const parsedSol = Number(amountSol);
+    if (!Number.isFinite(parsedSol) || parsedSol <= 0) {
+      console.warn("Invalid amountSol in storefront:", amountSol);
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid amountSol.",
+      });
+    }
+
+    const effectiveCluster = cluster || "devnet";
+
+    // For now, just log the request clearly so you can see it in terminal logs
+    console.log("[STOREFRONT REQUEST]", {
+      from: from.toBase58(),
+      amountSol: parsedSol,
+      estimatedAksol: estimatedAksol ?? null,
+      note: note ?? null,
+      cluster: effectiveCluster,
+    });
+
+    // TODO (later): tie this into /aksol/zero-percent-purchase
+    // to build a 0% SOL transfer transaction automatically.
+
+    return res.json({
+      ok: true,
+      message: "Storefront request recorded.",
+    });
+  } catch (e) {
+    console.error("Error in /aksol/storefront-purchase", e);
     res.status(500).json({
       ok: false,
       error: String(e),
